@@ -5,7 +5,7 @@ import base64
 import numpy as np
 import cv2
 
-cred = credentials.Certificate("firebase-key.json")  # use your actual filename
+cred = credentials.Certificate("/etc/secrets/firebase-key.json")  # use your actual filename
 firebase_admin.initialize_app(cred, {
     "databaseURL": "https://fish-monitor-d1886-default-rtdb.asia-southeast1.firebasedatabase.app/"
 })
