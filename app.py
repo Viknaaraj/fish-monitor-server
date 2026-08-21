@@ -7,7 +7,7 @@ import cv2
 
 cred = credentials.Certificate("your-firebase-key.json")  # use your actual filename
 firebase_admin.initialize_app(cred, {
-    "databaseURL": "https://your-project-id-default-rtdb.firebaseio.com"
+    "databaseURL": "https://fish-monitor-d1886-default-rtdb.asia-southeast1.firebasedatabase.app/"
 })
 
 app = Flask(__name__)
