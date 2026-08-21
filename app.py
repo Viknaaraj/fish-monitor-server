@@ -1,13 +1,13 @@
+import json
+import os
 from flask import Flask, request, jsonify
 import firebase_admin
 from firebase_admin import credentials, db
-import base64
-import numpy as np
-import cv2
 
-cred = credentials.Certificate("/etc/secrets/firebase-key.json")  # use your actual filename
+cred_dict = json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"])
+cred = credentials.Certificate(cred_dict)
 firebase_admin.initialize_app(cred, {
-    "databaseURL": "https://fish-monitor-d1886-default-rtdb.asia-southeast1.firebasedatabase.app/"
+    "databaseURL": "https://fish-monitor-d1886-default-rtdb.asia-southeast1.firebasedatabase.app"
 })
 
 app = Flask(__name__)
@@ -22,12 +22,11 @@ def process_data():
 @app.route("/anomaly", methods=["POST"])
 def anomaly_alert():
     data = request.json
-    image_b64 = data.get("image")  # already base64 text from the Pi
     ref = db.reference("anomaly_alerts")
     ref.push({
         "timestamp": data.get("timestamp"),
         "reason": data.get("reason"),
-        "image": image_b64
+        "image": data.get("image")
     })
     return jsonify({"status": "anomaly saved"})
 
