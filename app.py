@@ -19,10 +19,10 @@ with np.load('calibration_data.npz') as data:
     mtx = data['mtx']
     dist = data['dist']
 
-# Tuned MOG2: higher varThreshold (40) ignores minor bubble brightness flickers
-fgbg = cv2.createBackgroundSubtractorMOG2(history=15, varThreshold=40, detectShadows=False)
+# Background subtractor tuned for single fish motion
+fgbg = cv2.createBackgroundSubtractorMOG2(history=15, varThreshold=50, detectShadows=False)
 
-# Morphological kernel for removing bubble/food noise
+# Morphological kernel to erase bubble noise
 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
 @app.route("/process", methods=["POST"])
@@ -62,51 +62,49 @@ def upload_image():
             os.remove(save_path)
         return jsonify({"status": "error reading image"}), 400
 
-    # 1. Undistort and crop to region of interest
+    # 1. Undistort and crop
     h, w = img.shape[:2]
     newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
     dst = cv2.undistort(img, mtx, dist, None, newcameramtx)
     rx, ry, rw, rh = roi
     dst = dst[ry:ry+rh, rx:rx+rw]
 
-    # 2. Pre-filter noise with Gaussian blur
+    # 2. Gaussian blur to remove high-frequency bubble noise
     gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+    blurred = cv2.GaussianBlur(gray, (9, 9), 0)
 
-    # 3. Apply background subtraction
+    # 3. Background subtraction & morphological filtering
     fgmask = fgbg.apply(blurred)
-
-    # 4. Remove small bubbles/food particles using morphological opening and closing
     cleaned_mask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, kernel, iterations=2)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    # 5. Extract contours and filter by strict fish dimensions
+    # 4. Find contours and select only the single largest fish
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    fish_contours = [c for c in contours if cv2.contourArea(c) > 1500]
+    position = None
 
-    valid_fish = []
-    for c in contours:
-        area = cv2.contourArea(c)
-        bx, by, bw, bh = cv2.boundingRect(c)
-        
-        # Filter: Ignore small speckles (< 1200px) or unrealistically thin contours
-        if 1200 < area < 50000 and bw >= 25 and bh >= 25:
-            M = cv2.moments(c)
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                valid_fish.append({"x": cx, "y": cy, "area": int(area)})
+    if fish_contours:
+        # Pick the largest contour (the fish)
+        largest = max(fish_contours, key=cv2.contourArea)
+        M = cv2.moments(largest)
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            position = {"x": cx, "y": cy, "area": int(cv2.contourArea(largest))}
 
     os.remove(save_path)
 
-    if valid_fish:
+    if position:
         ref = db.reference("fish_positions")
         ref.push({
             "timestamp": datetime.utcnow().isoformat(),
             "frame": file.filename,
-            "detected_count": len(valid_fish),
-            "positions": valid_fish
+            "x": position["x"],
+            "y": position["y"],
+            "area": position["area"]
         })
-        return jsonify({"status": "tracked", "fish_count": len(valid_fish), "positions": valid_fish})
+        return jsonify({"status": "tracked", "position": position})
     else:
         return jsonify({"status": "no fish detected in frame"})
 
