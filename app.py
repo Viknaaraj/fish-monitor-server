@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify
 import firebase_admin
 from firebase_admin import credentials, db
 from datetime import datetime
+import gc  # Imported for memory cleanup
 
 cred_dict = json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"])
 cred = credentials.Certificate(cred_dict)
@@ -21,8 +22,6 @@ with np.load('calibration_data.npz') as data:
 
 # Background subtractor tuned for single fish motion
 fgbg = cv2.createBackgroundSubtractorMOG2(history=15, varThreshold=50, detectShadows=False)
-
-# Morphological kernel to erase bubble noise
 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
 @app.route("/process", methods=["POST"])
@@ -66,26 +65,35 @@ def upload_image():
     h, w = img.shape[:2]
     newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
     dst = cv2.undistort(img, mtx, dist, None, newcameramtx)
+    
+    # 2. FREE MEMORY: Delete the massive original image immediately
+    del img 
+    
     rx, ry, rw, rh = roi
     dst = dst[ry:ry+rh, rx:rx+rw]
 
-    # 2. Gaussian blur to remove high-frequency bubble noise
+    # 3. RESIZE: Shrink the image to stop MOG2 from crashing the server
+    scale_percent = 800.0 / dst.shape[1]
+    new_width = 800
+    new_height = int(dst.shape[0] * scale_percent)
+    dst = cv2.resize(dst, (new_width, new_height))
+
+    # 4. Blur and subtract background
     gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (9, 9), 0)
-
-    # 3. Background subtraction & morphological filtering
     fgmask = fgbg.apply(blurred)
+    
     cleaned_mask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, kernel, iterations=2)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    # 4. Find contours and select only the single largest fish
+    # 5. Find contours and select only the single largest fish
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    fish_contours = [c for c in contours if cv2.contourArea(c) > 1500]
+    # Adjusted threshold for the smaller image size
+    fish_contours = [c for c in contours if cv2.contourArea(c) > 150]
     position = None
 
     if fish_contours:
-        # Pick the largest contour (the fish)
         largest = max(fish_contours, key=cv2.contourArea)
         M = cv2.moments(largest)
         if M["m00"] != 0:
@@ -94,6 +102,9 @@ def upload_image():
             position = {"x": cx, "y": cy, "area": int(cv2.contourArea(largest))}
 
     os.remove(save_path)
+    
+    # 6. FORCE CLEANUP: Tell Python to dump all discarded variables from RAM
+    gc.collect()
 
     if position:
         ref = db.reference("fish_positions")
