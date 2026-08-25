@@ -20,6 +20,9 @@ with np.load('calibration_data.npz') as data:
     mtx = data['mtx']
     dist = data['dist']
 
+# Initialize the global background subtractor for movement tracking
+fgbg = cv2.createBackgroundSubtractorMOG2(history=15, varThreshold=25, detectShadows=False)
+
 @app.route("/process", methods=["POST"])
 def process_data():
     data = request.json
@@ -61,13 +64,23 @@ def upload_image():
         x, y, w_roi, h_roi = roi
         dst = dst[y:y+h_roi, x:x+w_roi]
         
-        # Overwrite the raw temporary file with the flattened version
+        # Detect movement
+        gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
+        fgmask = fgbg.apply(gray)
+        contours, _ = cv2.findContours(fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        for contour in contours:
+            if cv2.contourArea(contour) > 500:
+                bx, by, bw, bh = cv2.boundingRect(contour)
+                cv2.rectangle(dst, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
+                
+        # Overwrite the raw temporary file with the tracked version
         cv2.imwrite(save_path, dst)
-        print(f"Undistorted and saved: {file.filename}")
+        print(f"Tracked and saved: {file.filename}")
     else:
-        print(f"Error: Could not read {file.filename} for undistortion.")
+        print(f"Error: Could not read {file.filename} for processing.")
 
-    return jsonify({"status": "received and undistorted", "filename": file.filename})
+    return jsonify({"status": "received, undistorted, and tracked", "filename": file.filename})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
