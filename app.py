@@ -34,5 +34,18 @@ def anomaly_alert():
 def home():
     return "Server is running"
 
+@app.route("/upload", methods=["POST"])
+def upload_image():
+    if 'file' not in request.files:
+        return jsonify({"error": "no file provided"}), 400
+
+    file = request.files['file']
+    save_path = f"/tmp/{file.filename}"  
+    file.save(save_path)
+
+    print(f"Received and saved: {file.filename}")
+    return jsonify({"status": "received", "filename": file.filename})
+
+# This must always be the very last section of the file
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
