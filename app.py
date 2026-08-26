@@ -2,7 +2,7 @@ import json
 import os
 import cv2
 import numpy as np
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import firebase_admin
 from firebase_admin import credentials, db
 from datetime import datetime
@@ -48,16 +48,13 @@ def classify_water():
     turbidity_band_text = data.get("turbidity_band")
     ph = data.get("ph")
 
-    # Map the text band from the sensor to the numeric band the model was trained on
     band_map = {"Clear": 0, "Slightly turbid": 1, "Turbid": 2, "Very turbid": 3}
     turbidity_band = band_map.get(turbidity_band_text, 1)
 
-    # Predict water quality
     prediction = water_model.predict([[temp, turbidity_band, ph]])[0]
     labels = {0: "Excellent", 1: "Good", 2: "Poor"}
     result = labels.get(prediction, "Unknown")
 
-    # Save everything to a new Firebase node
     ref = db.reference("water_quality_status")
     ref.push({
         "timestamp": data.get("timestamp"),
@@ -108,6 +105,9 @@ def upload_image():
     cleaned_mask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, open_kernel, iterations=1)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, close_kernel, iterations=2)
 
+    # Save the latest mask for debugging
+    cv2.imwrite("/tmp/latest_mask.jpg", cleaned_mask)
+
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     fish_contours = [c for c in contours if cv2.contourArea(c) > 150]
     position = None
@@ -136,6 +136,14 @@ def upload_image():
         return jsonify({"status": "tracked", "position": position})
     else:
         return jsonify({"status": "no fish detected in frame"})
+
+@app.route("/debug/mask")
+def view_mask():
+    """Serves the most recent background subtraction mask for visual debugging."""
+    if os.path.exists("/tmp/latest_mask.jpg"):
+        return send_file("/tmp/latest_mask.jpg", mimetype="image/jpeg")
+    else:
+        return "No mask generated yet. Run the Pi script first."
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
