@@ -34,10 +34,11 @@ newcameramtx = None
 roi = None
 rx = ry = rw = rh = 0
 
-fgbg = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=16, detectShadows=False)
+# Slightly increased threshold to ignore static, moderate history
+fgbg = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=25, detectShadows=False)
 open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-# Keep the massive closing kernel to glue dots together
-close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+# Scaled back to 11x11: enough to glue the fish, but avoids massive bloating
+close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
 
 @app.route("/")
 def home():
@@ -100,19 +101,21 @@ def upload_image():
     dst = cv2.resize(dst, (new_width, new_height))
 
     gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
-    
-    # Reduced Gaussian Blur to keep fish edges sharp
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    mask_top = int(new_height * 0.25)
-    blurred[0:mask_top, :] = 0
-    mask_left = int(new_width * 0.25)
-    blurred[:, 0:mask_left] = 0
-    
+    # Let the background subtractor see the entire, natural image
     fgmask = fgbg.apply(blurred, learningRate=0.005)
 
     cleaned_mask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, open_kernel, iterations=1)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, close_kernel, iterations=2)
+
+    # --- MOVED ROI MASKING HERE ---
+    # We black out the edges of the final processed mask instead of the source image
+    mask_top = int(new_height * 0.25)
+    cleaned_mask[0:mask_top, :] = 0
+    mask_left = int(new_width * 0.25)
+    cleaned_mask[:, 0:mask_left] = 0
+    # ------------------------------
 
     cv2.imwrite("/tmp/latest_mask.jpg", cleaned_mask)
 
