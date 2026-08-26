@@ -3,3 +3,5 @@ gunicorn
 firebase-admin
 opencv-python-headless
 numpy
+joblib
+scikit-learn
