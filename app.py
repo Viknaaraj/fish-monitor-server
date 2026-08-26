@@ -36,7 +36,7 @@ rx = ry = rw = rh = 0
 
 fgbg = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=16, detectShadows=False)
 open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-# Increased closing kernel to aggressively merge scattered dots
+# Keep the massive closing kernel to glue dots together
 close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
 
 @app.route("/")
@@ -101,8 +101,8 @@ def upload_image():
 
     gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
     
-    # Increased Gaussian Blur to melt away water noise
-    blurred = cv2.GaussianBlur(gray, (21, 21), 0)
+    # Reduced Gaussian Blur to keep fish edges sharp
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
     mask_top = int(new_height * 0.25)
     blurred[0:mask_top, :] = 0
@@ -118,7 +118,6 @@ def upload_image():
 
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Lowered the minimum area requirement
     fish_contours = [c for c in contours if cv2.contourArea(c) > 50]
     position = None
 
