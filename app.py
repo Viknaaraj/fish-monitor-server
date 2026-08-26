@@ -31,8 +31,8 @@ newcameramtx = None
 roi = None
 rx = ry = rw = rh = 0
 
-# Tuned MOG2 background subtractor and morphological kernels
-fgbg = cv2.createBackgroundSubtractorMOG2(history=60, varThreshold=25, detectShadows=False)
+# Tuned MOG2 background subtractor (varThreshold increased to 40 to ignore faint reflections)
+fgbg = cv2.createBackgroundSubtractorMOG2(history=60, varThreshold=40, detectShadows=False)
 open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
@@ -98,6 +98,16 @@ def upload_image():
 
     gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (9, 9), 0)
+    
+    # --- NEW ROI MASKING ---
+    # Black out the top 25% of the image to ignore surface bubbles
+    mask_top = int(new_height * 0.25)
+    blurred[0:mask_top, :] = 0
+    
+    # Black out the left 15% of the image to ignore the heater tube
+    mask_left = int(new_width * 0.15)
+    blurred[:, 0:mask_left] = 0
+    # -----------------------
     
     fgmask = fgbg.apply(blurred, learningRate=0.01)
 
