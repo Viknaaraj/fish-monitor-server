@@ -5,7 +5,7 @@ import numpy as np
 from flask import Flask, request, jsonify, send_file
 import firebase_admin
 from firebase_admin import credentials, db
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import gc
 import joblib
 
@@ -42,7 +42,6 @@ def home():
 
 @app.route("/classify_water", methods=["POST"])
 def classify_water():
-    """Receives sensor data, classifies water quality, and stores it in Firebase."""
     data = request.json
     temp = data.get("temp")
     turbidity_band_text = data.get("turbidity_band")
@@ -105,7 +104,6 @@ def upload_image():
     cleaned_mask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, open_kernel, iterations=1)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, close_kernel, iterations=2)
 
-    # Save the latest mask for debugging
     cv2.imwrite("/tmp/latest_mask.jpg", cleaned_mask)
 
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -126,8 +124,9 @@ def upload_image():
 
     if position:
         ref = db.reference("fish_positions")
+        my_tz = timezone(timedelta(hours=8))
         ref.push({
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(my_tz).isoformat(),
             "frame": file.filename,
             "x": position["x"],
             "y": position["y"],
@@ -139,7 +138,6 @@ def upload_image():
 
 @app.route("/debug/mask")
 def view_mask():
-    """Serves the most recent background subtraction mask for visual debugging."""
     if os.path.exists("/tmp/latest_mask.jpg"):
         return send_file("/tmp/latest_mask.jpg", mimetype="image/jpeg")
     else:
