@@ -7,6 +7,7 @@ import firebase_admin
 from firebase_admin import credentials, db
 from datetime import datetime
 import gc
+import joblib
 
 # Initialize Firebase Admin SDK
 cred_dict = json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"])
@@ -17,48 +18,56 @@ firebase_admin.initialize_app(cred, {
 
 app = Flask(__name__)
 
-# Load calibration matrices once on server startup
+# Load camera calibration matrices
 with np.load('calibration_data.npz') as data:
     mtx = data['mtx']
     dist = data['dist']
 
-# Cached camera calibration parameters to avoid recalculating per request
+# Load the trained water quality model
+water_model = joblib.load("water_quality_model.pkl")
+
+# Cached camera calibration parameters
 newcameramtx = None
 roi = None
 rx = ry = rw = rh = 0
 
-# Tuned MOG2 background subtractor:
-# - history=60: Remembers background across longer cycles
-# - varThreshold=25: Sensitive enough to capture subtle movements
+# Tuned MOG2 background subtractor and morphological kernels
 fgbg = cv2.createBackgroundSubtractorMOG2(history=60, varThreshold=25, detectShadows=False)
-
-# Morphological kernels
-open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))   # Removes micro-bubbles & food speckles
-close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))  # Bridges gaps in the fish contour
-
-@app.route("/process", methods=["POST"])
-def process_data():
-    """Receives and stores analog sensor readings in Firebase."""
-    data = request.json
-    ref = db.reference("sensor_data")
-    ref.push(data)
-    return jsonify({"status": "saved to firebase"})
-
-@app.route("/anomaly", methods=["POST"])
-def anomaly_alert():
-    """Receives and logs anomaly flags and alert frames."""
-    data = request.json
-    ref = db.reference("anomaly_alerts")
-    ref.push({
-        "timestamp": data.get("timestamp"),
-        "reason": data.get("reason"),
-        "image": data.get("image")
-    })
-    return jsonify({"status": "anomaly saved"})
+open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
 @app.route("/")
 def home():
     return "Server is running"
+
+@app.route("/classify_water", methods=["POST"])
+def classify_water():
+    """Receives sensor data, classifies water quality, and stores it in Firebase."""
+    data = request.json
+    temp = data.get("temp")
+    turbidity_band_text = data.get("turbidity_band")
+    ph = data.get("ph")
+
+    # Map the text band from the sensor to the numeric band the model was trained on
+    band_map = {"Clear": 0, "Slightly turbid": 1, "Turbid": 2, "Very turbid": 3}
+    turbidity_band = band_map.get(turbidity_band_text, 1)
+
+    # Predict water quality
+    prediction = water_model.predict([[temp, turbidity_band, ph]])[0]
+    labels = {0: "Excellent", 1: "Good", 2: "Poor"}
+    result = labels.get(prediction, "Unknown")
+
+    # Save everything to a new Firebase node
+    ref = db.reference("water_quality_status")
+    ref.push({
+        "timestamp": data.get("timestamp"),
+        "temp": temp,
+        "ph": ph,
+        "turbidity_band": turbidity_band_text,
+        "quality": result
+    })
+
+    return jsonify({"water_quality": result, "status": "saved to firebase"})
 
 @app.route("/upload", methods=["POST"])
 def upload_image():
@@ -77,35 +86,28 @@ def upload_image():
             os.remove(save_path)
         return jsonify({"status": "error reading image"}), 400
 
-    # 1. Compute optimal camera matrix once on the first frame received
     if newcameramtx is None:
         h, w = img.shape[:2]
         newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
         rx, ry, rw, rh = roi
 
-    # 2. Undistort and crop at full native resolution
     dst = cv2.undistort(img, mtx, dist, None, newcameramtx)
-    del img  # Free raw full-size image from memory immediately
+    del img
     dst = dst[ry:ry+rh, rx:rx+rw]
 
-    # 3. Downscale after undistortion to stay within memory limits
     scale_percent = 800.0 / dst.shape[1]
     new_width = 800
     new_height = int(dst.shape[0] * scale_percent)
     dst = cv2.resize(dst, (new_width, new_height))
 
-    # 4. Noise filtering & background subtraction
     gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (9, 9), 0)
     
-    # learningRate=0.01 prevents slow-moving or resting fish from blending into background
     fgmask = fgbg.apply(blurred, learningRate=0.01)
 
-    # 5. Clean up mask: eliminate bubbles without eroding the fish body
     cleaned_mask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, open_kernel, iterations=1)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, close_kernel, iterations=2)
 
-    # 6. Extract contours and track the single largest moving target
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     fish_contours = [c for c in contours if cv2.contourArea(c) > 150]
     position = None
@@ -118,12 +120,10 @@ def upload_image():
             cy = int(M["m01"] / M["m00"])
             position = {"x": cx, "y": cy, "area": int(cv2.contourArea(largest))}
 
-    # Clean up disk and RAM
     if os.path.exists(save_path):
         os.remove(save_path)
     gc.collect()
 
-    # 7. Push coordinates to Firebase
     if position:
         ref = db.reference("fish_positions")
         ref.push({
