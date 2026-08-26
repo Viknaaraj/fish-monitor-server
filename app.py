@@ -34,10 +34,10 @@ newcameramtx = None
 roi = None
 rx = ry = rw = rh = 0
 
-# Lowered threshold to 16 to detect faint fish colors, increased history
 fgbg = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=16, detectShadows=False)
 open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+# Increased closing kernel to aggressively merge scattered dots
+close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
 
 @app.route("/")
 def home():
@@ -100,14 +100,15 @@ def upload_image():
     dst = cv2.resize(dst, (new_width, new_height))
 
     gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (9, 9), 0)
+    
+    # Increased Gaussian Blur to melt away water noise
+    blurred = cv2.GaussianBlur(gray, (21, 21), 0)
     
     mask_top = int(new_height * 0.25)
     blurred[0:mask_top, :] = 0
     mask_left = int(new_width * 0.25)
     blurred[:, 0:mask_left] = 0
     
-    # Lowered learning rate so slow fish do not disappear
     fgmask = fgbg.apply(blurred, learningRate=0.005)
 
     cleaned_mask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, open_kernel, iterations=1)
@@ -116,7 +117,9 @@ def upload_image():
     cv2.imwrite("/tmp/latest_mask.jpg", cleaned_mask)
 
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    fish_contours = [c for c in contours if cv2.contourArea(c) > 150]
+    
+    # Lowered the minimum area requirement
+    fish_contours = [c for c in contours if cv2.contourArea(c) > 50]
     position = None
 
     if fish_contours:
