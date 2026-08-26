@@ -18,21 +18,24 @@ firebase_admin.initialize_app(cred, {
 
 app = Flask(__name__)
 
-# Load camera calibration matrices
 with np.load('calibration_data.npz') as data:
     mtx = data['mtx']
     dist = data['dist']
 
-# Load the trained water quality model
 water_model = joblib.load("water_quality_model.pkl")
 
-# Cached camera calibration parameters
+try:
+    behavior_model = joblib.load("behavior_model.pkl")
+except Exception as e:
+    behavior_model = None
+    print(f"Behavior model not loaded: {e}")
+
 newcameramtx = None
 roi = None
 rx = ry = rw = rh = 0
 
-# Tuned MOG2 background subtractor
-fgbg = cv2.createBackgroundSubtractorMOG2(history=60, varThreshold=40, detectShadows=False)
+# Lowered threshold to 16 to detect faint fish colors, increased history
+fgbg = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=16, detectShadows=False)
 open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
@@ -99,17 +102,13 @@ def upload_image():
     gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (9, 9), 0)
     
-    # --- ROI MASKING ---
-    # Black out the top 25% of the image to ignore surface bubbles
     mask_top = int(new_height * 0.25)
     blurred[0:mask_top, :] = 0
-    
-    # Black out the left 25% of the image to completely ignore the heater tube
     mask_left = int(new_width * 0.25)
     blurred[:, 0:mask_left] = 0
-    # -------------------
     
-    fgmask = fgbg.apply(blurred, learningRate=0.01)
+    # Lowered learning rate so slow fish do not disappear
+    fgmask = fgbg.apply(blurred, learningRate=0.005)
 
     cleaned_mask = cv2.morphologyEx(fgmask, cv2.MORPH_OPEN, open_kernel, iterations=1)
     cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, close_kernel, iterations=2)
@@ -128,21 +127,38 @@ def upload_image():
             cy = int(M["m01"] / M["m00"])
             position = {"x": cx, "y": cy, "area": int(cv2.contourArea(largest))}
 
+    my_tz = timezone(timedelta(hours=8))
+    local_time = datetime.now(my_tz).isoformat()
+    is_anomaly = False
+
+    if position and behavior_model is not None:
+        prediction = behavior_model.predict([[position["x"], position["y"], position["area"]]])[0]
+        if prediction == -1:
+            is_anomaly = True
+            anomaly_ref = db.reference("anomaly_alerts")
+            anomaly_ref.push({
+                "timestamp": local_time,
+                "frame": file.filename,
+                "reason": "Abnormal behavior detected (location or size outlier)",
+                "x": position["x"],
+                "y": position["y"]
+            })
+
     if os.path.exists(save_path):
         os.remove(save_path)
     gc.collect()
 
     if position:
         ref = db.reference("fish_positions")
-        my_tz = timezone(timedelta(hours=8))
         ref.push({
-            "timestamp": datetime.now(my_tz).isoformat(),
+            "timestamp": local_time,
             "frame": file.filename,
             "x": position["x"],
             "y": position["y"],
-            "area": position["area"]
+            "area": position["area"],
+            "is_anomaly": is_anomaly
         })
-        return jsonify({"status": "tracked", "position": position})
+        return jsonify({"status": "tracked", "position": position, "anomaly": is_anomaly})
     else:
         return jsonify({"status": "no fish detected in frame"})
 
